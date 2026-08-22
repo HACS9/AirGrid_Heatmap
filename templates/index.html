@@ -1,0 +1,565 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>AirGrid Poland</title>
+    <meta charset="utf-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1"/>
+
+    <link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css"/>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link href="https://fonts.googleapis.com/css2?family=Space+Mono:wght@400;700&family=Syne:wght@400;700;800&display=swap" rel="stylesheet">
+
+    <script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+    <script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+
+    <style>
+        :root {
+            --bg:        #090c10;
+            --surface:   #0e1318;
+            --border:    #1e2730;
+            --accent:    #00e5ff;
+            --accent2:   #ff6b35;
+            --text:      #c8d8e8;
+            --text-dim:  #556070;
+            --panel-w:   260px;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            background: var(--bg);
+            color: var(--text);
+            font-family: 'Space Mono', monospace;
+            overflow: hidden;
+        }
+
+        #map {
+            position: fixed;
+            inset: 0;
+            z-index: 0;
+        }
+
+        /* ── LEAFLET OVERRIDES ── */
+        .leaflet-tile-pane { filter: brightness(0.45) saturate(0.3) hue-rotate(180deg); }
+        .leaflet-control-zoom a {
+            background: var(--surface) !important;
+            color: var(--accent) !important;
+            border-color: var(--border) !important;
+            font-family: 'Space Mono', monospace !important;
+        }
+        .leaflet-control-attribution { display: none; }
+        .leaflet-popup-content-wrapper {
+            background: rgba(9,12,16,0.97) !important;
+            border: 1px solid var(--accent2) !important;
+            border-radius: 4px !important;
+            box-shadow: 0 0 20px rgba(255,107,53,0.2) !important;
+            padding: 0 !important;
+        }
+        .leaflet-popup-content {
+            margin: 0 !important;
+            color: var(--text);
+            font-family: 'Space Mono', monospace;
+            font-size: 11px;
+        }
+        .leaflet-popup-tip { background: var(--border) !important; }
+        .leaflet-popup-close-button { color: var(--text-dim) !important; top: 8px !important; right: 10px !important; }
+
+        /* ── TOP BAR ── */
+        #topbar {
+            position: fixed;
+            top: 0; left: 0; right: 0;
+            height: 48px;
+            background: rgba(9,12,16,0.92);
+            border-bottom: 1px solid var(--border);
+            display: flex;
+            align-items: center;
+            padding: 0 16px;
+            gap: 16px;
+            z-index: 1000;
+            backdrop-filter: blur(8px);
+        }
+
+        .logo {
+            font-family: 'Syne', sans-serif;
+            font-weight: 800;
+            font-size: 15px;
+            letter-spacing: 0.12em;
+            color: var(--accent);
+            text-transform: uppercase;
+            white-space: nowrap;
+        }
+        .logo span { color: var(--text-dim); }
+
+        .toggle-btn {
+            display: flex;
+            align-items: center;
+            gap: 7px;
+            padding: 5px 12px;
+            border: 1px solid var(--border);
+            border-radius: 3px;
+            background: transparent;
+            color: var(--text-dim);
+            font-family: 'Space Mono', monospace;
+            font-size: 11px;
+            cursor: pointer;
+            transition: all 0.15s;
+            letter-spacing: 0.05em;
+            text-transform: uppercase;
+        }
+        .toggle-btn:hover { border-color: var(--accent); color: var(--accent); }
+        .toggle-btn.active { border-color: var(--accent); color: var(--accent); background: rgba(0,229,255,0.07); }
+        .toggle-btn.heat:hover { border-color: var(--accent2); color: var(--accent2); }
+        .toggle-btn.heat.active { border-color: var(--accent2); color: var(--accent2); background: rgba(255,107,53,0.07); }
+
+        .dot { width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: 0.5; }
+        .toggle-btn.active .dot { opacity: 1; }
+
+        #plane-count {
+            margin-left: auto;
+            font-size: 11px;
+            color: var(--text-dim);
+            letter-spacing: 0.04em;
+        }
+        #plane-count b { color: var(--accent); }
+
+        /* ── PLANE ICON ── */
+        .plane-icon {
+            font-size: 18px;
+            color: var(--accent);
+            filter: drop-shadow(0 0 3px rgba(0,229,255,0.5));
+            display: block;
+            line-height: 1;
+        }
+        .plane-icon.selected {
+            color: #fff;
+            filter: drop-shadow(0 0 8px rgba(255,255,255,0.9));
+        }
+
+        /* ── AIRCRAFT LABEL ── */
+        .aircraft-label { pointer-events: none; }
+        .aircraft-label div {
+            background: rgba(9,12,16,0.92);
+            color: var(--accent);
+            border: 1px solid var(--accent);
+            padding: 2px 7px;
+            border-radius: 2px;
+            font-family: 'Space Mono', monospace;
+            font-size: 10px;
+            white-space: nowrap;
+            transform: translate(-50%, -140%);
+            letter-spacing: 0.08em;
+        }
+
+        /* ── INFO PANEL ── */
+        #panel {
+            position: fixed;
+            top: 64px;
+            right: 16px;
+            width: var(--panel-w);
+            background: rgba(9,12,16,0.95);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 14px 16px;
+            z-index: 1000;
+            display: none;
+            backdrop-filter: blur(10px);
+            animation: slideIn 0.15s ease;
+        }
+        @keyframes slideIn {
+            from { opacity: 0; transform: translateX(10px); }
+            to   { opacity: 1; transform: translateX(0); }
+        }
+        .panel-callsign {
+            font-family: 'Syne', sans-serif;
+            font-weight: 800;
+            font-size: 18px;
+            color: #fff;
+            letter-spacing: 0.05em;
+            margin-bottom: 12px;
+            padding-bottom: 10px;
+            border-bottom: 1px solid var(--border);
+        }
+        .panel-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: baseline;
+            margin-bottom: 7px;
+        }
+        .panel-label { font-size: 9px; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.1em; }
+        .panel-value { font-size: 13px; color: var(--text); font-weight: 700; }
+        .panel-value.accent { color: var(--accent); }
+        .close-btn {
+            position: absolute;
+            top: 10px; right: 12px;
+            background: none; border: none;
+            color: var(--text-dim);
+            font-size: 14px; cursor: pointer;
+            font-family: 'Space Mono', monospace;
+        }
+        .close-btn:hover { color: var(--text); }
+
+        /* ── POPUP CONTENT ── */
+        .popup-inner { padding: 12px 14px; }
+        .popup-title {
+            font-family: 'Syne', sans-serif;
+            font-weight: 700;
+            font-size: 12px;
+            color: var(--accent2);
+            margin-bottom: 10px;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+        }
+        .popup-row { display: flex; justify-content: space-between; gap: 20px; margin-bottom: 5px; }
+        .popup-lbl { color: var(--text-dim); font-size: 10px; }
+        .popup-val { color: #fff; font-weight: 700; }
+
+        /* ── LEGEND ── */
+        #legend {
+            position: fixed;
+            bottom: 24px; left: 16px;
+            background: rgba(9,12,16,0.92);
+            border: 1px solid var(--border);
+            border-radius: 4px;
+            padding: 10px 14px;
+            z-index: 1000;
+            font-size: 10px;
+            display: none;
+            backdrop-filter: blur(8px);
+        }
+        .legend-title { color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.1em; margin-bottom: 8px; font-size: 9px; }
+        .legend-bar {
+            width: 140px; height: 8px; border-radius: 2px;
+            background: linear-gradient(to right,
+                rgba(0,229,255,0.2),
+                rgba(255,200,0,0.6),
+                rgba(255,107,53,0.85),
+                rgba(255,30,30,1)
+            );
+            margin-bottom: 4px;
+        }
+        .legend-labels { display: flex; justify-content: space-between; color: var(--text-dim); }
+    </style>
+</head>
+
+<body>
+<div id="map"></div>
+
+<div id="topbar">
+    <div class="logo">Air<span>Grid</span> PL</div>
+    <button class="toggle-btn active" id="btn-planes" onclick="togglePlanes()">
+        <span class="dot"></span> Live Planes
+    </button>
+    <button class="toggle-btn heat" id="btn-heat" onclick="toggleHeatmap()">
+        <span class="dot"></span> Heatmap
+    </button>
+    <div id="plane-count">— planes</div>
+</div>
+
+<div id="panel">
+    <button class="close-btn" onclick="deselectAircraft()">✕</button>
+    <div class="panel-callsign" id="panel-callsign">—</div>
+    <div class="panel-row">
+        <span class="panel-label">Speed</span>
+        <span class="panel-value accent" id="panel-speed">—</span>
+    </div>
+    <div class="panel-row">
+        <span class="panel-label">Altitude</span>
+        <span class="panel-value" id="panel-alt">—</span>
+    </div>
+    <div class="panel-row">
+        <span class="panel-label">Country</span>
+        <span class="panel-value" id="panel-country">—</span>
+    </div>
+    <div class="panel-row">
+        <span class="panel-label">ICAO24</span>
+        <span class="panel-value" id="panel-icao" style="font-size:10px;color:var(--text-dim)">—</span>
+    </div>
+</div>
+
+<div id="legend">
+    <div class="legend-title">Sightings / cell</div>
+    <div class="legend-bar"></div>
+    <div class="legend-labels"><span>Low</span><span>High</span></div>
+</div>
+
+<script>
+// ── MAP ───────────────────────────────────────────────────────────────────────
+const map = L.map("map").setView([52.1, 19.4], 6);
+L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", { maxZoom: 18 }).addTo(map);
+
+// ── STATE ─────────────────────────────────────────────────────────────────────
+const socket    = io();
+let aircraft    = {};
+let trails      = {};
+let selectedId  = null;
+let showPlanes  = true;
+let showHeatmap = false;
+let heatCells   = [];
+let heatLayers  = [];
+let heatTimer   = null;
+const MAX_TRAIL = 30;
+
+// ── TOGGLES ───────────────────────────────────────────────────────────────────
+function togglePlanes() {
+    showPlanes = !showPlanes;
+    document.getElementById("btn-planes").classList.toggle("active", showPlanes);
+    Object.values(aircraft).forEach(a => {
+        showPlanes ? map.addLayer(a.marker) : map.removeLayer(a.marker);
+    });
+}
+
+function toggleHeatmap() {
+    showHeatmap = !showHeatmap;
+    document.getElementById("btn-heat").classList.toggle("active", showHeatmap);
+    document.getElementById("legend").style.display = showHeatmap ? "block" : "none";
+    if (showHeatmap) {
+        loadHeatmap();
+        heatTimer = setInterval(loadHeatmap, 30000);
+    } else {
+        clearInterval(heatTimer);
+        heatLayers.forEach(l => map.removeLayer(l));
+        heatLayers = [];
+    }
+}
+
+// ── HEATMAP ───────────────────────────────────────────────────────────────────
+async function loadHeatmap() {
+    try {
+        const res = await fetch("/heatmap");
+        heatCells = await res.json();
+    } catch(e) { return; }
+
+    heatLayers.forEach(l => map.removeLayer(l));
+    heatLayers = [];
+    if (!heatCells.length) return;
+
+    const maxCount = Math.max(...heatCells.map(c => c.count), 1);
+
+    heatCells.forEach(cell => {
+        const t       = cell.count / maxCount;
+        const color   = heatColor(t);
+        const opacity = 0.1 + t * 0.6;
+
+        const rect = L.rectangle(
+            [[cell.lat_min, cell.lon_min], [cell.lat_max, cell.lon_max]],
+            { color, weight: 0.5, opacity: 0.4, fillColor: color, fillOpacity: opacity }
+        );
+
+        rect.on("click", e => {
+            L.DomEvent.stopPropagation(e);
+            openCellPopup(cell, e.latlng);
+        });
+
+        rect.addTo(map);
+        heatLayers.push(rect);
+    });
+}
+
+function heatColor(t) {
+    // log scale — compresses airport hotspots, reveals corridors
+    t = Math.log1p(t * 9) / Math.log1p(9);
+    if (t < 0.33) {
+        const s = t / 0.33;
+        return `rgb(${Math.round(s*255)},${Math.round(180+s*75)},${Math.round(255*(1-s))})`;
+    } else if (t < 0.66) {
+        const s = (t-0.33)/0.33;
+        return `rgb(255,${Math.round(255-s*148)},0)`;
+    } else {
+        const s = (t-0.66)/0.34;
+        return `rgb(255,${Math.round(107*(1-s))},0)`;
+    }
+}
+
+function openCellPopup(cell, latlng) {
+    L.popup({ maxWidth: 200 })
+        .setLatLng(latlng)
+        .setContent(`
+            <div class="popup-inner">
+                <div class="popup-title">Grid Cell</div>
+                <div class="popup-row"><span class="popup-lbl">Sightings</span><span class="popup-val">${cell.count.toLocaleString()}</span></div>
+                <div class="popup-row"><span class="popup-lbl">Time over cell</span><span class="popup-val">${cell.time_min} min</span></div>
+                <div class="popup-row"><span class="popup-lbl">Cell ID</span><span class="popup-val" style="font-size:9px;color:var(--text-dim)">${cell.cell_id}</span></div>
+            </div>
+        `)
+        .openOn(map);
+}
+
+// ── MAP CLICK ─────────────────────────────────────────────────────────────────
+map.on("click", async e => {
+    deselectAircraft();
+    if (!showHeatmap) {
+        const { lat, lng } = e.latlng;
+        try {
+            const res  = await fetch(`/stats?lat=${lat}&lon=${lng}`);
+            const data = await res.json();
+            if (data.count > 0) {
+                L.popup({ maxWidth: 200 })
+                    .setLatLng(e.latlng)
+                    .setContent(`
+                        <div class="popup-inner">
+                            <div class="popup-title">Grid Cell</div>
+                            <div class="popup-row"><span class="popup-lbl">Sightings</span><span class="popup-val">${data.count.toLocaleString()}</span></div>
+                            <div class="popup-row"><span class="popup-lbl">Time over cell</span><span class="popup-val">${data.time_min} min</span></div>
+                        </div>
+                    `)
+                    .openOn(map);
+            }
+        } catch(e) {}
+    }
+});
+
+// ── SELECTION ─────────────────────────────────────────────────────────────────
+function selectAircraft(id) {
+    selectedId = selectedId === id ? null : id;
+    updatePanel();
+}
+
+function deselectAircraft() {
+    selectedId = null;
+    updatePanel();
+}
+
+function updatePanel() {
+    // clean up labels/trails
+    Object.values(aircraft).forEach(a => {
+        if (a.label)    { map.removeLayer(a.label);    a.label    = null; }
+        if (a.polyline) { map.removeLayer(a.polyline); a.polyline = null; }
+    });
+
+    // update icon states
+    Object.entries(aircraft).forEach(([id, a]) => {
+        const el = a.marker.getElement();
+        if (el) {
+            const icon = el.querySelector(".plane-icon");
+            if (icon) icon.classList.toggle("selected", id === selectedId);
+        }
+    });
+
+    const panel = document.getElementById("panel");
+    if (!selectedId || !aircraft[selectedId]) {
+        panel.style.display = "none";
+        return;
+    }
+
+    const a     = aircraft[selectedId];
+    const label = a.callsign || selectedId.toUpperCase();
+
+    // floating label
+    a.label = L.marker([a.lat, a.lon], {
+        icon: L.divIcon({
+            className: "aircraft-label",
+            html: `<div>${label}</div>`,
+            iconAnchor: [0, 0]
+        }),
+        interactive: false
+    }).addTo(map);
+
+    // trail
+    const path = trails[selectedId];
+    if (path && path.length > 1) {
+        a.polyline = L.polyline(path, {
+            color: "#00e5ff", weight: 2, opacity: 0.5, dashArray: "4 4"
+        }).addTo(map);
+    }
+
+    // panel values
+    const kmh = a.velocity ? Math.round(a.velocity * 3.6) : null;
+    const ft  = a.altitude  ? Math.round(a.altitude * 3.281) : null;
+
+    document.getElementById("panel-callsign").textContent = label;
+    document.getElementById("panel-speed").textContent    = kmh ? `${kmh} km/h` : "—";
+    document.getElementById("panel-alt").textContent      = ft  ? `${ft.toLocaleString()} ft` : "—";
+    document.getElementById("panel-country").textContent  = a.country || "—";
+    document.getElementById("panel-icao").textContent     = selectedId;
+    panel.style.display = "block";
+}
+
+// ── SOCKET ────────────────────────────────────────────────────────────────────
+socket.on("planes", data => {
+    document.getElementById("plane-count").innerHTML = `<b>${data.length}</b> planes`;
+
+    const active = new Set(data.map(p => p.id));
+
+    // remove departed planes
+    Object.keys(aircraft).forEach(id => {
+        if (!active.has(id)) {
+            map.removeLayer(aircraft[id].marker);
+            if (aircraft[id].label)    map.removeLayer(aircraft[id].label);
+            if (aircraft[id].polyline) map.removeLayer(aircraft[id].polyline);
+            delete aircraft[id];
+            delete trails[id];
+            if (selectedId === id) deselectAircraft();
+        }
+    });
+
+    data.forEach(p => {
+        if (!p.lat || !p.lon) return;
+        const id = p.id;
+
+        if (!aircraft[id]) {
+            const marker = L.marker([p.lat, p.lon], {
+                icon: L.divIcon({
+                    className: "",
+                    html: `<div class="plane-icon">✈</div>`,
+                    iconSize: [22, 22],
+                    iconAnchor: [11, 11]
+                }),
+                zIndexOffset: 100
+            });
+
+            if (showPlanes) marker.addTo(map);
+            marker.on("click", e => { L.DomEvent.stopPropagation(e); selectAircraft(id); });
+
+            aircraft[id] = {
+                marker,
+                lat: p.lat, lon: p.lon,
+                targetLat: p.lat, targetLon: p.lon,
+                track: p.track || 0,
+                callsign: p.callsign || "",
+                velocity: p.velocity,
+                altitude: p.altitude,
+                country:  p.country,
+                label: null, polyline: null
+            };
+            trails[id] = [[p.lat, p.lon]];
+
+        } else {
+            const a = aircraft[id];
+            trails[id].push([p.lat, p.lon]);
+            if (trails[id].length > MAX_TRAIL) trails[id].shift();
+            a.targetLat = p.lat; a.targetLon = p.lon;
+            a.track     = p.track || 0;
+            a.callsign  = p.callsign || "";
+            a.velocity  = p.velocity;
+            a.altitude  = p.altitude;
+            a.country   = p.country;
+        }
+    });
+
+    if (selectedId && aircraft[selectedId]) updatePanel();
+});
+
+// ── ANIMATION ─────────────────────────────────────────────────────────────────
+function lerp(a, b, t) { return a + (b - a) * t; }
+
+function animate() {
+    Object.entries(aircraft).forEach(([id, a]) => {
+        a.lat = lerp(a.lat, a.targetLat, 0.1);
+        a.lon = lerp(a.lon, a.targetLon, 0.1);
+        a.marker.setLatLng([a.lat, a.lon]);
+
+        const el = a.marker.getElement();
+        if (el) {
+            const icon = el.querySelector(".plane-icon");
+            if (icon) icon.style.transform = `rotate(${a.track}deg)`;
+        }
+
+        if (id === selectedId && a.label) a.label.setLatLng([a.lat, a.lon]);
+    });
+    requestAnimationFrame(animate);
+}
+
+animate();
+</script>
+</body>
+</html>
